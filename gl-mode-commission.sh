@@ -131,6 +131,14 @@ while [ -n "$(U get wireless.@wifi-iface[$i])" ]; do
     esac
     i=$((i+1))
 done
+# An extender's DOT config may have its uplink-radio access point off (the
+# radio is a dedicated backhaul there). In NO-DOT there is no uplink, so both
+# main access points come back on.
+if [ "$UNIT_ROLE" = "repeater" ]; then
+    for sec in wifi2g wifi5g default_radio0 default_radio1; do
+        U get "wireless.$sec" >/dev/null && U set "wireless.$sec.disabled=0"
+    done
+fi
 for sec in bbss5g bbss2g bsta5g bsta2g; do
     U get "wireless.$sec" >/dev/null && U set "wireless.$sec.disabled=1"
 done

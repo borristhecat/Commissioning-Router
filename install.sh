@@ -14,8 +14,15 @@
 set -u
 
 KEY="${1:-}"
-[ -n "$KEY" ] || { echo "Usage: sh install.sh 'wifi-key' [base-url]"; exit 1; }
+[ -n "$KEY" ] || { echo "Usage: sh install.sh 'wifi-key' [router|repeater] [base-url]"; exit 1; }
 case "$KEY" in *"'"*) echo "ERROR: key contains a single quote; not supported."; exit 1 ;; esac
+
+# Optional role. Given: unit.conf is rewritten for that role.
+# Omitted: an existing unit.conf is kept; a new one defaults to router.
+ROLE=""
+case "${2:-}" in
+    router|repeater) ROLE="$2"; shift ;;
+esac
 
 BASE="${2:-https://raw.githubusercontent.com/borristhecat/Commissioning-Router/main}"
 case "$BASE" in *OWNER/REPO*) echo "ERROR: install.sh still has the placeholder URL. Edit BASE."; exit 1 ;; esac
@@ -43,12 +50,21 @@ fetch gl-safe.sh            /root/gl-safe.sh
 chmod +x /usr/bin/gl-mode.sh /etc/init.d/modewatch /root/gl-*.sh
 
 U=/etc/gl-mode/unit.conf
-if [ -f "$U" ]; then
-    sed -i '/^WIFI_KEY=/d' "$U"
-    echo "WIFI_KEY='$KEY'" >> "$U"
-    echo "Kept existing $U, updated WIFI_KEY."
-else
-    cat > "$U" <<EOF
+write_unit() {   # $1 = role
+    if [ "$1" = "repeater" ]; then
+        cat > "$U" <<EOF
+UNIT_ROLE=repeater
+UNIT_IP=172.24.172.5
+AP_MGMT_IP=172.24.172.5
+SSID_SUFFIX='_Ext1'
+CH_24=11
+CH_5=44
+UPLINK_BAND=2g
+UPLINK_RADIO_AP=off
+WIFI_KEY='$KEY'
+EOF
+    else
+        cat > "$U" <<EOF
 UNIT_ROLE=router
 UNIT_IP=172.24.172.1
 AP_MGMT_IP=172.24.172.254
@@ -57,7 +73,18 @@ CH_24=1
 CH_5=36
 WIFI_KEY='$KEY'
 EOF
-    echo "Wrote default router $U - edit it for an extender unit."
+    fi
+}
+if [ -n "$ROLE" ]; then
+    write_unit "$ROLE"
+    echo "Wrote $U for the $ROLE role."
+elif [ -f "$U" ]; then
+    sed -i '/^WIFI_KEY=/d' "$U"
+    echo "WIFI_KEY='$KEY'" >> "$U"
+    echo "Kept existing $U ($(sed -n 's/^UNIT_ROLE=//p' "$U")), updated WIFI_KEY."
+else
+    write_unit router
+    echo "Wrote default router $U. For an extender: sh install.sh 'key' repeater"
 fi
 chmod 600 "$U"
 

@@ -13,6 +13,8 @@ FILES="network dhcp wireless repeater"
 
 [ -f "$CONF" ] || { echo "gl-mode: $CONF missing" >&2; exit 1; }
 . "$CONF"
+UNIT_ROLE=router
+[ -f "$BASE/unit.conf" ] && UNIT_ROLE=$(sed -n "s/^UNIT_ROLE=//p" "$BASE/unit.conf" | tr -d "'\"")
 
 read_switch() {
     [ -f /sys/kernel/debug/gpio ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
@@ -77,9 +79,14 @@ apply() {
     /etc/init.d/dnsmasq restart 2>/dev/null
     /etc/init.d/odhcpd  restart 2>/dev/null
 
+    # GL's repeater manager: restarted in DOT on a router (it may carry a
+    # wifi uplink), always stopped on an extender (our own uplink is used).
     if [ -x /etc/init.d/repeater ]; then
-        [ "$m" = "dot" ] && /etc/init.d/repeater restart 2>/dev/null \
-                         || /etc/init.d/repeater stop    2>/dev/null
+        if [ "$m" = "dot" ] && [ "$UNIT_ROLE" = "router" ]; then
+            /etc/init.d/repeater restart 2>/dev/null
+        else
+            /etc/init.d/repeater stop 2>/dev/null
+        fi
     fi
 
     # 'wifi', NOT 'mtk-wifi-configurator restart'. On GL 4.11 the latter
@@ -100,9 +107,17 @@ case "${1:-apply}" in
         echo "gpio-$GPIO_NUM = $(read_switch)   (dot = $DOT_STATE)"
         echo "position     = $(current_mode 2>/dev/null || echo unknown)"
         echo "applied      = $(cat "$STATE_FILE" 2>/dev/null || echo none)"
-        [ -f "$BASE/unit.conf" ] && cat "$BASE/unit.conf"
+        [ -f "$BASE/unit.conf" ] && sed 's/^WIFI_KEY=.*/WIFI_KEY=(set)/' "$BASE/unit.conf"
         ip -br addr show br-lan 2>/dev/null
         uci -q show dhcp | grep -E '\.(ignore|force|start|limit)='
+        # Extender: how well it hears the router. Judge placement by this,
+        # not by the signal bars on a laptop.
+        if [ "$UNIT_ROLE" = "repeater" ] && command -v iw >/dev/null; then
+            for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
+                echo "--- uplink $i"
+                iw dev "$i" link | grep -E 'Connected|Not connected|SSID|signal|tx bitrate'
+            done
+        fi
         ;;
     *) echo "Usage: $0 apply|watch|status"; exit 1 ;;
 esac

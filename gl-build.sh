@@ -67,6 +67,16 @@ if [ "$UNIT_ROLE" = "router" ] && ! uci -q get network.wan >/dev/null; then
     exit 1
 fi
 
+# --- the extender role is for the Opal (standard mac80211 wifi) only ---
+# The MT3000's MediaTek driver makes client links through GL's own repeater
+# system, not a 'sta' wifi-iface, so an MT3000 extender would have no uplink.
+if [ "$UNIT_ROLE" = "repeater" ] && uci -q show wireless | grep -q "=wifi-device" \
+   && uci -q show wireless | grep -q "\.type='mtk'"; then
+    echo "ERROR: the extender (repeater) role is for the Opal only - this unit is an MT3000."
+    echo "       Reinstall as a router:  sh /tmp/install.sh 'wifi-key' router"
+    exit 1
+fi
+
 # --- in router mode the WAN port must not be a LAN bridge member ---
 # A port cannot be a routed WAN and a switch port at once. With eth0 left in
 # br-lan (e.g. from an AP template) the WAN never gets an address - not even a
@@ -126,22 +136,38 @@ uci set network.lan.isolate='0'
 
 # Real static alias. 'option fallback_ip' does not exist in netifd.
 # 21.02+ interfaces take 'device'; 18.06 (Opal) only understands 'ifname'.
-uci set network.fallback='interface'
-uci set network.fallback.proto='static'
-if uci -q get network.lan.device >/dev/null; then
-    uci set network.fallback.device='br-lan'
+# An extender uses the same address (.5) for both, so in DOT the alias would
+# duplicate the LAN address - it is left out, and commissioning adds it to the
+# NO-DOT template where the LAN switches to DHCP.
+if [ "$AP_MGMT_IP" = "$UNIT_IP" ]; then
+    uci -q delete network.fallback
 else
-    uci -q delete network.fallback.device
-    uci set network.fallback.ifname='br-lan'
+    uci set network.fallback='interface'
+    uci set network.fallback.proto='static'
+    if uci -q get network.lan.device >/dev/null; then
+        uci set network.fallback.device='br-lan'
+    else
+        uci -q delete network.fallback.device
+        uci set network.fallback.ifname='br-lan'
+    fi
+    uci set network.fallback.ipaddr="$AP_MGMT_IP"
+    uci set network.fallback.netmask="$NETMASK"
 fi
-uci set network.fallback.ipaddr="$AP_MGMT_IP"
-uci set network.fallback.netmask="$NETMASK"
 
 if [ "$UNIT_ROLE" = "router" ]; then
     uci set network.wan.proto='dhcp'
     uci set network.wan.ipv6='0'
     uci set network.wan.classlessroute='0'
     uci set network.wan.disabled='0'
+    uci -q delete network.lan.gateway
+    uci -q delete network.lan.dns
+else
+    # Extender: reaches the internet (and GoodCloud) through the router's LAN.
+    # The WAN port is not used in DOT. Its section is kept, disabled, so
+    # commissioning can still find the port to bridge in NO-DOT.
+    uci set network.lan.gateway="$ROUTER_IP"
+    uci set network.lan.dns="$ROUTER_IP"
+    uci -q get network.wan >/dev/null && uci set network.wan.disabled='1'
 fi
 uci -q set network.guest.disabled='1'
 uci commit network
@@ -237,12 +263,61 @@ for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p")
         "$MAIN5")  set_iface "$s" "${SSID_5}${SSID_SUFFIX}";  continue ;;
         bsta*)     uci set "wireless.$s.disabled=1"; uci set "wireless.$s.mode=sta"; continue ;;
         bbss*)     uci set "wireless.$s.disabled=1"; continue ;;
+        uplink)    continue ;;   # the extender's own client link, handled below
     esac
     [ "$(uci -q get "wireless.$s.guest")" = "1" ] && { uci set "wireless.$s.disabled=1"; continue; }
     [ "$(uci -q get "wireless.$s.iot")"   = "1" ] && { uci set "wireless.$s.disabled=1"; continue; }
     echo "  left alone: wireless.$s"
 done
+
+# --- extender uplink ---
+# A client (sta) interface joins the router's SSID and sits in the LAN bridge.
+# wds=1 is 4-address mode: a true layer-2 bridge, so clients of the extender
+# get addresses from the router. UPLINK_BAND in unit.conf picks the radio;
+# 2g is the default - longer range, and it avoids the router landing the
+# extender on a radar-checked 5 GHz channel its own AP cannot use.
+UPLINK_BAND="${UPLINK_BAND:-2g}"
+if [ "$UNIT_ROLE" = "repeater" ]; then
+    case "$UPLINK_BAND" in
+        5g) UP_DEV="$DEV5";  UP_SSID="$SSID_5"  ;;
+        *)  UP_DEV="$DEV24"; UP_SSID="$SSID_24" ;;
+    esac
+    uci set wireless.uplink='wifi-iface'
+    uci set wireless.uplink.device="$UP_DEV"
+    uci set wireless.uplink.mode='sta'
+    uci set wireless.uplink.network='lan'
+    uci set wireless.uplink.ssid="$UP_SSID"
+    uci set wireless.uplink.key="$WIFI_KEY"
+    uci set wireless.uplink.encryption="$ENCRYPTION"
+    uci set wireless.uplink.wds='1'
+    uci set wireless.uplink.disabled='0'
+    echo "  uplink: joins '$UP_SSID' on $UPLINK_BAND ($UP_DEV), bridged"
+
+    # Dedicated backhaul: by default the extender does NOT also run a client
+    # access point on the uplink's radio. Sharing a radio halves its airtime
+    # and ties that access point to the router's channel and to the uplink
+    # staying up. Clients use the other band's _Ext1 network instead.
+    # UPLINK_RADIO_AP=on in unit.conf brings it back (e.g. for 2.4-only devices).
+    # In NO-DOT there is no uplink, so commissioning turns it back on.
+    case "$UP_DEV" in "$DEV24") UP_AP="$MAIN24" ;; *) UP_AP="$MAIN5" ;; esac
+    if [ "${UPLINK_RADIO_AP:-off}" = "on" ]; then
+        echo "  access point on the uplink radio kept on (UPLINK_RADIO_AP=on)"
+    else
+        uci set "wireless.$UP_AP.disabled=1"
+        echo "  access point on the uplink radio ($UP_AP) off - dedicated backhaul"
+    fi
+else
+    uci -q delete wireless.uplink
+fi
 uci commit wireless
+
+# GL's own repeater manager scans for and rewrites client links. On an
+# extender it would fight the uplink above, so it is switched off there.
+if [ "$UNIT_ROLE" = "repeater" ] && [ -x /etc/init.d/repeater ]; then
+    /etc/init.d/repeater stop 2>/dev/null
+    /etc/init.d/repeater disable 2>/dev/null
+    echo "  GL repeater manager stopped and disabled."
+fi
 
 echo "Applying..."
 /etc/init.d/network restart

@@ -23,8 +23,27 @@ Over SSH (local, or GoodCloud Remote SSH). Single-quote the wifi key:
 
 ```sh
 wget -qO /tmp/install.sh https://raw.githubusercontent.com/borristhecat/Commissioning-Router/main/install.sh
-sh /tmp/install.sh 'wifi-key-here'
+sh /tmp/install.sh 'wifi-key-here'             # router (default)
+sh /tmp/install.sh 'wifi-key-here' repeater    # extender
 ```
+
+Giving a role rewrites `/etc/gl-mode/unit.conf` for it. Without one, an
+existing `unit.conf` is kept.
+
+### Roles
+
+| | Router | Extender (`repeater`) |
+| --- | --- | --- |
+| Dot | router at .1, DHCP server, own SSIDs | joins the router's `Legrand-TechNet` wifi and bridges it; fixed at .5, gateway .1, DHCP off, broadcasts `_Ext1` SSIDs |
+| No dot | AP / inline bridge, mgmt .254 | AP / inline bridge, mgmt .5, uplink off |
+| Channels (no dot) | 1 / 36 | 11 / 44 |
+
+The extender's uplink uses 2.4 GHz as a dedicated backhaul by default
+(`UPLINK_BAND=2g` in `unit.conf`): in dot it broadcasts only the 5 GHz `_Ext1`
+network, so clients and backhaul never share a radio. `UPLINK_RADIO_AP=on`
+brings the 2.4 GHz `_Ext1` back for 2.4-only devices. In no dot both bands
+broadcast. `gl-mode.sh status` on an extender shows the
+uplink's signal - use that, not a laptop's signal bars, to place it.
 
 Then put the switch in **dot** and wait a minute for the unit to settle.
 
