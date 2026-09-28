@@ -39,6 +39,7 @@ fetch modewatch             /etc/init.d/modewatch
 fetch gl-build.sh           /root/gl-build.sh
 fetch gl-mode-commission.sh /root/gl-mode-commission.sh
 fetch gl-mode-calibrate.sh  /root/gl-mode-calibrate.sh
+fetch gl-safe.sh            /root/gl-safe.sh
 chmod +x /usr/bin/gl-mode.sh /etc/init.d/modewatch /root/gl-*.sh
 
 U=/etc/gl-mode/unit.conf
@@ -61,12 +62,12 @@ fi
 chmod 600 "$U"
 
 ok=1
-for f in /usr/bin/gl-mode.sh /root/gl-build.sh /root/gl-mode-commission.sh /root/gl-mode-calibrate.sh; do
+for f in /usr/bin/gl-mode.sh /root/gl-build.sh /root/gl-mode-commission.sh /root/gl-mode-calibrate.sh /root/gl-safe.sh; do
     sh -n "$f" || { echo "SYNTAX ERROR in $f"; ok=0; }
 done
 [ "$ok" = 1 ] || exit 1
 
 echo
 echo "Installed. Next, with the switch in DOT:"
-echo "  sh /root/gl-build.sh"
-echo "  sh /root/gl-mode-commission.sh"
+echo "  Remote (GoodCloud):  sh /root/gl-safe.sh      (rolls back if the unit loses internet)"
+echo "  On the LAN cable:    sh /root/gl-build.sh  then  sh /root/gl-mode-commission.sh"

@@ -19,26 +19,38 @@ wget -qO /tmp/install.sh https://raw.githubusercontent.com/borristhecat/Commissi
 sh /tmp/install.sh 'wifi-key-here'
 ```
 
-Then with the switch in **dot**:
+Then put the switch in **dot** and wait a minute for the unit to settle.
+
+**Remote (GoodCloud Remote SSH) - always use this:**
+
+```sh
+sh /root/gl-safe.sh
+```
+
+Saves the current config, builds, commissions, then checks the unit can
+still reach the internet. If it cannot within 5 minutes, it restores the saved
+config and reboots, so the unit comes back as it was. Your session will drop
+when networking restarts; reconnect after a few minutes and read
+`/root/gl-safe.log`. `sh /root/gl-safe.sh rollback` restores the saved config
+by hand later.
+
+**Local, on the LAN cable:**
 
 ```sh
 sh /root/gl-build.sh
 sh /root/gl-mode-commission.sh
 ```
 
-Build restarts networking - run it over the LAN cable when local.
+The build refuses to run unless the switch is in dot and the live config is
+router mode, and it stops any original `switch_watcher` itself. It runs
+detached and logs to `/root/gl-build.log`, so a dropped session cannot stop it
+part-way. The log's last line is `EXIT=<code>`.
 
-## Retrofitting a unit running the old switch_logic.sh
+## Retrofitting a unit running the original switch_logic.sh
 
-Stop the old watcher first, then install as above. Busybox has no pkill:
-
-```sh
-ps | grep switch_watcher | grep -v grep
-kill <PID>
-```
-
-Commissioning removes the old scripts and their rc.local line itself.
-Afterwards, once it works:
+Switch to **dot first**, wait for router mode, then install and run as above.
+No need to stop the old watcher by hand - the build does it. Once the flip test
+passes:
 
 ```sh
 rm -f /etc/config/network.ap /etc/config/network.router

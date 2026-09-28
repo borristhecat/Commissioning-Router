@@ -1,8 +1,27 @@
 #!/bin/sh
-# gl-build.sh - configure a blank unit into its DOT-mode role.
-# Run over the LAN cable: this restarts networking and wifi.
+# gl-build.sh - configure a unit into its DOT-mode role.
+#
+# The build restarts networking, which drops SSH and GoodCloud sessions. So it
+# runs itself detached: the real work happens in a background copy that ignores
+# the hang-up and writes everything to /root/gl-build.log (flash, so the log
+# survives a reboot). This terminal just follows the log. If the session drops,
+# the build carries on; reconnect and read the log. Its last line is EXIT=<code>.
 
 set -u
+LOG=/root/gl-build.log
+if [ -z "${GL_DETACHED:-}" ]; then
+    : > "$LOG"
+    ( trap '' HUP PIPE; GL_DETACHED=1 sh "$0" "$@" >> "$LOG" 2>&1; echo "EXIT=$?" >> "$LOG" ) &
+    worker=$!
+    tail -f "$LOG" &
+    follower=$!
+    wait "$worker"
+    sleep 1
+    kill "$follower" 2>/dev/null
+    rc=$(sed -n 's/^EXIT=//p' "$LOG" | tail -n 1)
+    exit "${rc:-1}"
+fi
+trap '' HUP PIPE
 BASE=/etc/gl-mode
 for f in "$BASE/site.conf" "$BASE/unit.conf"; do
     [ -f "$f" ] || { echo "ERROR: $f missing."; exit 1; }
@@ -13,6 +32,52 @@ done
 : "${WIFI_KEY:?WIFI_KEY not set - it belongs in /etc/gl-mode/unit.conf}"
 SSID_SUFFIX="${SSID_SUFFIX:-}"
 case "$UNIT_ROLE" in router|repeater) ;; *) echo "ERROR: bad UNIT_ROLE"; exit 1 ;; esac
+
+# --- refuse to run unless the switch is in DOT ---
+# The build writes the DOT-mode role. Run on an AP-mode config it would produce
+# a half-router: LAN static .1, WAN still bridged, no WAN interface, and no
+# internet for the unit itself - so no GoodCloud either.
+GPIO_FILE="${GPIO_FILE:-/sys/kernel/debug/gpio}"
+if [ -f "$BASE/switch.conf" ]; then
+    . "$BASE/switch.conf"
+else
+    case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+        glinet,mt3000*) GPIO_NUM=455; DOT_STATE=lo ;;
+    esac
+fi
+if [ -n "${GPIO_NUM:-}" ]; then
+    [ -f "$GPIO_FILE" ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+    NOW=$(grep -E "gpio-${GPIO_NUM}[^0-9]" "$GPIO_FILE" 2>/dev/null | grep -oE '\b(hi|lo)\b' | head -n1)
+    if [ "$NOW" != "$DOT_STATE" ]; then
+        echo "ERROR: the switch is not in DOT (gpio-$GPIO_NUM reads '${NOW:-nothing}', DOT is '$DOT_STATE')."
+        echo "       Move it to DOT, wait a minute for the unit to settle, and run this again."
+        exit 1
+    fi
+else
+    echo "WARNING: unknown board and no switch.conf - cannot check the switch position."
+    echo "         Make sure it is in DOT. Continuing in 10 seconds (Ctrl-C to stop)."
+    sleep 10
+fi
+
+# --- refuse to build a router on top of an AP-mode config ---
+if [ "$UNIT_ROLE" = "router" ] && ! uci -q get network.wan >/dev/null; then
+    echo "ERROR: there is no network.wan section, so the live config looks like AP mode."
+    echo "       Put the switch in DOT and let the unit switch to router mode first."
+    exit 1
+fi
+
+# --- retire the original switch_watcher, if present ---
+# It must not be running while the build changes config, and it must not come
+# back at boot before commissioning replaces it. Its scripts and templates stay
+# on disk until commissioning (and gl-safe.sh's rollback restores rc.local).
+if ps | grep -q '[s]witch_watcher'; then
+    kill $(ps | grep '[s]witch_watcher' | awk '{print $1}') 2>/dev/null
+    echo "Stopped the original switch_watcher."
+fi
+if grep -q switch_watcher /etc/rc.local 2>/dev/null; then
+    sed -i '/switch_watcher/d' /etc/rc.local
+    echo "Removed switch_watcher from rc.local."
+fi
 
 echo "Building $UNIT_ROLE at $UNIT_IP"
 
@@ -117,9 +182,6 @@ for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p")
         bsta*)     uci set "wireless.$s.disabled=1"; uci set "wireless.$s.mode=sta"; continue ;;
         bbss*)     uci set "wireless.$s.disabled=1"; continue ;;
     esac
-    case "$(uci -q get "wireless.$s.ifname")" in
-        apcli*)    uci set "wireless.$s.disabled=1"; continue ;;
-    esac
     [ "$(uci -q get "wireless.$s.guest")" = "1" ] && { uci set "wireless.$s.disabled=1"; continue; }
     [ "$(uci -q get "wireless.$s.iot")"   = "1" ] && { uci set "wireless.$s.disabled=1"; continue; }
     echo "  left alone: wireless.$s"
@@ -159,3 +221,6 @@ if [ -f /etc/config/kmwan ] && [ -n "${WAN_ORDER:-}" ]; then
     uci commit kmwan
     /etc/init.d/kmwan restart 2>/dev/null
 fi
+
+echo "Build complete."
+exit 0
