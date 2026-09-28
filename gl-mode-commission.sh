@@ -113,10 +113,19 @@ done
 i=0; g=0
 while [ -n "$(U get wireless.@wifi-iface[$i])" ]; do
     g=$((g+1)); [ "$g" -gt 64 ] && break
+    # Disable (never delete) client and mesh interfaces in AP mode, so the unit
+    # is not associated upstream while also bridged inline. Deleting GL's own
+    # sections risks confusing its mesh/repeater tooling.
     case "$(U get wireless.@wifi-iface[$i].mode)" in
-        sta|wds|mesh|adhoc|monitor) U delete "wireless.@wifi-iface[$i]"; continue ;;
+        sta|wds|mesh|adhoc|monitor) U set "wireless.@wifi-iface[$i].disabled=1" ;;
+    esac
+    case "$(U get wireless.@wifi-iface[$i].ifname)" in
+        apcli*) U set "wireless.@wifi-iface[$i].disabled=1" ;;
     esac
     i=$((i+1))
+done
+for sec in bbss5g bbss2g bsta5g bsta2g; do
+    U get "wireless.$sec" >/dev/null && U set "wireless.$sec.disabled=1"
 done
 U commit wireless
 echo "Derived NO-DOT (AP) template."

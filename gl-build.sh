@@ -93,24 +93,45 @@ done
 set_radio "$DEV24" "$HTMODE_24"
 set_radio "$DEV5"  "$HTMODE_5"
 
+# Only the two main access points are configured. Everything else is either
+# switched off (guest, IoT, mesh backhaul) or left exactly as found.
+#
+# GL 4.11 added mesh backhaul interfaces - bbss5g (rax3, hidden backhaul AP)
+# and bsta5g (apclix0, backhaul client). An earlier version of this script
+# treated them as main APs and enabled them, which put ra0 on the 5 GHz band
+# and duplicated the 5 GHz SSID. They must stay disabled.
+main_iface() {   # $1 = preferred section name, $2 = fallback ifname
+    if uci -q get "wireless.$1" >/dev/null; then echo "$1"; return; fi
+    for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
+        [ "$(uci -q get "wireless.$s.ifname")" = "$2" ] && { echo "$s"; return; }
+    done
+}
+MAIN24=$(main_iface wifi2g ra0)
+MAIN5=$(main_iface wifi5g rax0)
+[ -n "$MAIN24" ] && [ -n "$MAIN5" ] || { echo "ERROR: main wifi interfaces not found."; exit 1; }
+
 for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
+    case "$s" in
+        "$MAIN24") set_iface "$s" "${SSID_24}${SSID_SUFFIX}"; continue ;;
+        "$MAIN5")  set_iface "$s" "${SSID_5}${SSID_SUFFIX}";  continue ;;
+        bsta*)     uci set "wireless.$s.disabled=1"; uci set "wireless.$s.mode=sta"; continue ;;
+        bbss*)     uci set "wireless.$s.disabled=1"; continue ;;
+    esac
+    case "$(uci -q get "wireless.$s.ifname")" in
+        apcli*)    uci set "wireless.$s.disabled=1"; continue ;;
+    esac
     [ "$(uci -q get "wireless.$s.guest")" = "1" ] && { uci set "wireless.$s.disabled=1"; continue; }
     [ "$(uci -q get "wireless.$s.iot")"   = "1" ] && { uci set "wireless.$s.disabled=1"; continue; }
-    case "$(uci -q get "wireless.$s.device")" in
-        "$DEV24") set_iface "$s" "${SSID_24}${SSID_SUFFIX}" ;;
-        "$DEV5")  set_iface "$s" "${SSID_5}${SSID_SUFFIX}"  ;;
-    esac
+    echo "  left alone: wireless.$s"
 done
 uci commit wireless
 
 echo "Applying..."
 /etc/init.d/network restart
 /etc/init.d/dnsmasq restart 2>/dev/null
-if [ -x /etc/init.d/mtk-wifi-configurator ]; then
-    /etc/init.d/mtk-wifi-configurator restart 2>/dev/null
-else
-    wifi reload 2>/dev/null || wifi 2>/dev/null
-fi
+# 'wifi', NOT 'mtk-wifi-configurator restart' - see gl-mode.sh.
+sleep 3
+wifi 2>/dev/null
 
 echo
 echo "Built. LAN $UNIT_IP (alias $AP_MGMT_IP), SSIDs ${SSID_24}${SSID_SUFFIX} / ${SSID_5}${SSID_SUFFIX}"

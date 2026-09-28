@@ -27,6 +27,32 @@ current_mode() {
     if [ "$s" = "$DOT_STATE" ]; then echo dot; else echo nodot; fi
 }
 
+# Wait for every enabled AP interface on 'lan' to join br-lan. If one has
+# not appeared after ~40 s, add it by hand and log it, so a recurrence is
+# visible in logread rather than failing silently.
+check_bridge() {
+    want=''
+    for s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
+        [ "$(uci -q get "wireless.$s.disabled")" = "1" ] && continue
+        [ "$(uci -q get "wireless.$s.mode")" = "ap" ]     || continue
+        [ "$(uci -q get "wireless.$s.network")" = "lan" ] || continue
+        n=$(uci -q get "wireless.$s.ifname"); [ -n "$n" ] && want="$want $n"
+    done
+    [ -z "$want" ] && return 0
+    t=0
+    while [ "$t" -lt 40 ]; do
+        miss=''
+        for n in $want; do [ -e "/sys/class/net/br-lan/brif/$n" ] || miss="$miss $n"; done
+        [ -z "$miss" ] && return 0
+        sleep 2; t=$((t+2))
+    done
+    for n in $miss; do
+        ip link set "$n" up 2>/dev/null
+        ip link set "$n" master br-lan 2>/dev/null
+        logger -t gl-mode "WARNING: $n was not in br-lan after 40s, added by hand"
+    done
+}
+
 apply() {
     m=$(current_mode) || { logger -t gl-mode "cannot read gpio-$GPIO_NUM"; return 1; }
 
@@ -56,11 +82,12 @@ apply() {
                          || /etc/init.d/repeater stop    2>/dev/null
     fi
 
-    if [ -x /etc/init.d/mtk-wifi-configurator ]; then
-        /etc/init.d/mtk-wifi-configurator restart 2>/dev/null
-    else
-        wifi reload 2>/dev/null || wifi 2>/dev/null
-    fi
+    # 'wifi', NOT 'mtk-wifi-configurator restart'. On GL 4.11 the latter
+    # leaves the radios on factory defaults (blank open SSID, ch 6) and out
+    # of the bridge. Verified on the bench 2026-09-28.
+    sleep 3
+    wifi 2>/dev/null
+    check_bridge
 
     echo "$m" > "$STATE_FILE"
     logger -t gl-mode "now in $m mode"
