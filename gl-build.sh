@@ -43,6 +43,7 @@ if [ -f "$BASE/switch.conf" ]; then
 else
     case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
         glinet,mt3000*) GPIO_NUM=455; DOT_STATE=lo ;;
+        glinet,gl-sft1200*) GPIO_NUM=1; DOT_STATE=lo ;;
     esac
 fi
 if [ -n "${GPIO_NUM:-}" ]; then
@@ -74,6 +75,7 @@ fi
 if [ "$UNIT_ROLE" = "router" ]; then
     WAN_DEV=$(uci -q get network.wan.device)
     if [ -n "$WAN_DEV" ]; then
+        # 21.02+ style (MT3000): the bridge is a 'config device' with a ports list
         i=0
         while uci -q get "network.@device[$i]" >/dev/null; do
             if [ "$(uci -q get "network.@device[$i].type")" = "bridge" ]; then
@@ -85,6 +87,18 @@ if [ "$UNIT_ROLE" = "router" ]; then
             fi
             i=$((i + 1)); [ "$i" -gt 32 ] && break
         done
+    else
+        # 18.06 style (Opal): the bridge members are lan's space-separated ifname
+        WAN_IF=$(uci -q get network.wan.ifname)
+        LAN_IF=$(uci -q get network.lan.ifname)
+        if [ -n "$WAN_IF" ]; then
+            case " $LAN_IF " in
+                *" $WAN_IF "*)
+                    NEW_IF=$(echo " $LAN_IF " | sed "s/ $WAN_IF / /; s/^ *//; s/ *$//")
+                    uci set "network.lan.ifname=$NEW_IF"
+                    echo "WARNING: $WAN_IF (the WAN port) was in the LAN bridge - removed it." ;;
+            esac
+        fi
     fi
 fi
 
@@ -111,15 +125,20 @@ uci set network.lan.ip6assign='60'
 uci set network.lan.isolate='0'
 
 # Real static alias. 'option fallback_ip' does not exist in netifd.
+# 21.02+ interfaces take 'device'; 18.06 (Opal) only understands 'ifname'.
 uci set network.fallback='interface'
 uci set network.fallback.proto='static'
-uci set network.fallback.device='br-lan'
+if uci -q get network.lan.device >/dev/null; then
+    uci set network.fallback.device='br-lan'
+else
+    uci -q delete network.fallback.device
+    uci set network.fallback.ifname='br-lan'
+fi
 uci set network.fallback.ipaddr="$AP_MGMT_IP"
 uci set network.fallback.netmask="$NETMASK"
 
 if [ "$UNIT_ROLE" = "router" ]; then
     uci set network.wan.proto='dhcp'
-    uci set network.wan.metric='2'
     uci set network.wan.ipv6='0'
     uci set network.wan.classlessroute='0'
     uci set network.wan.disabled='0'
@@ -147,12 +166,23 @@ uci commit dhcp
 
 # --- wireless ---
 # Channel stays auto in dot mode; commission fixes channels in the AP template.
-set_radio() {
+# Width and power depend on the driver:
+#   mtk (MT3000)       htmode from site.conf (HE20); txpower is a 0-100 percentage
+#   mac80211 (Opal)    no wifi 6, so HT20 on 2.4 GHz and VHT20 on 5 GHz; txpower is
+#                      dBm and already at the unit's maximum, so it is left alone
+set_radio() {   # $1 = section, $2 = mtk htmode, $3 = band
     uci set "wireless.$1.channel=auto"
-    uci set "wireless.$1.htmode=$2"
     uci set "wireless.$1.country=$COUNTRY"
-    uci set "wireless.$1.txpower=$TXPOWER"
     uci set "wireless.$1.disabled=0"
+    if [ "$(uci -q get "wireless.$1.type")" = "mtk" ]; then
+        uci set "wireless.$1.htmode=$2"
+        uci set "wireless.$1.txpower=$TXPOWER"
+    else
+        case "$3" in
+            2g) uci set "wireless.$1.htmode=HT20" ;;
+            5g) uci set "wireless.$1.htmode=VHT20" ;;
+        esac
+    fi
 }
 set_iface() {
     uci set "wireless.$1.mode=ap"
@@ -177,8 +207,8 @@ for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-device$/\1/p"
 done
 [ -n "$DEV24" ] && [ -n "$DEV5" ] || { echo "ERROR: radios not found."; exit 1; }
 
-set_radio "$DEV24" "$HTMODE_24"
-set_radio "$DEV5"  "$HTMODE_5"
+set_radio "$DEV24" "$HTMODE_24" 2g
+set_radio "$DEV5"  "$HTMODE_5"  5g
 
 # Only the two main access points are configured. Everything else is either
 # switched off (guest, IoT, mesh backhaul) or left exactly as found.
@@ -187,14 +217,18 @@ set_radio "$DEV5"  "$HTMODE_5"
 # and bsta5g (apclix0, backhaul client). An earlier version of this script
 # treated them as main APs and enabled them, which put ra0 on the 5 GHz band
 # and duplicated the 5 GHz SSID. They must stay disabled.
-main_iface() {   # $1 = preferred section name, $2 = fallback ifname
-    if uci -q get "wireless.$1" >/dev/null; then echo "$1"; return; fi
+main_iface() {   # $1 $2 = candidate section names, $3 $4 = candidate ifnames
+    for n in "$1" "$2"; do
+        uci -q get "wireless.$n" >/dev/null && { echo "$n"; return; }
+    done
     for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
-        [ "$(uci -q get "wireless.$s.ifname")" = "$2" ] && { echo "$s"; return; }
+        case "$(uci -q get "wireless.$s.ifname")" in
+            "$3"|"$4") echo "$s"; return ;;
+        esac
     done
 }
-MAIN24=$(main_iface wifi2g ra0)
-MAIN5=$(main_iface wifi5g rax0)
+MAIN24=$(main_iface wifi2g default_radio0 ra0  wlan0)
+MAIN5=$(main_iface  wifi5g default_radio1 rax0 wlan1)
 [ -n "$MAIN24" ] && [ -n "$MAIN5" ] || { echo "ERROR: main wifi interfaces not found."; exit 1; }
 
 for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do

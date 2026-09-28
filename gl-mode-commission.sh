@@ -17,6 +17,8 @@ if [ ! -f "$BASE/switch.conf" ]; then
     case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
         glinet,mt3000*) printf 'GPIO_NUM=455\nDOT_STATE=lo\n' > "$BASE/switch.conf"
                         echo "Applied known MT3000 mapping (gpio-455, dot=lo)." ;;
+        glinet,gl-sft1200*) printf 'GPIO_NUM=1\nDOT_STATE=lo\n' > "$BASE/switch.conf"
+                        echo "Applied known SFT1200 mapping (gpio-1, dot=lo)." ;;
         *) echo "ERROR: no switch.conf and unknown board. Run gl-mode-calibrate.sh."; exit 1 ;;
     esac
 fi
@@ -99,14 +101,19 @@ fi
 # --- wireless: fixed non-overlapping channels ---
 i=0
 while [ -n "$(U get wireless.@wifi-device[$i])" ]; do
+    # mtk (MT3000): HE widths and txpower as a percentage.
+    # mac80211 (Opal): HT20/VHT20, txpower left at the unit's dBm maximum.
+    TYPE=$(U get "wireless.@wifi-device[$i].type")
     case "$(U get wireless.@wifi-device[$i].band)" in
         2g) U set "wireless.@wifi-device[$i].channel=$CH_24"
-            U set "wireless.@wifi-device[$i].htmode=$HTMODE_24" ;;
+            [ "$TYPE" = mtk ] && W=$HTMODE_24 || W=HT20
+            U set "wireless.@wifi-device[$i].htmode=$W" ;;
         5g) U set "wireless.@wifi-device[$i].channel=$CH_5"
-            U set "wireless.@wifi-device[$i].htmode=$HTMODE_5" ;;
+            [ "$TYPE" = mtk ] && W=$HTMODE_5 || W=VHT20
+            U set "wireless.@wifi-device[$i].htmode=$W" ;;
     esac
     U set "wireless.@wifi-device[$i].country=$COUNTRY"
-    U set "wireless.@wifi-device[$i].txpower=$TXPOWER"
+    [ "$TYPE" = mtk ] && U set "wireless.@wifi-device[$i].txpower=$TXPOWER"
     U set "wireless.@wifi-device[$i].disabled=0"
     i=$((i+1)); [ "$i" -gt 8 ] && break
 done
