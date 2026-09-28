@@ -66,6 +66,28 @@ if [ "$UNIT_ROLE" = "router" ] && ! uci -q get network.wan >/dev/null; then
     exit 1
 fi
 
+# --- in router mode the WAN port must not be a LAN bridge member ---
+# A port cannot be a routed WAN and a switch port at once. With eth0 left in
+# br-lan (e.g. from an AP template) the WAN never gets an address - not even a
+# static one - while the LAN side still serves DHCP. Seen on a field unit on
+# 2026-09-28; it needed a factory reset. Remove it here, whatever put it there.
+if [ "$UNIT_ROLE" = "router" ]; then
+    WAN_DEV=$(uci -q get network.wan.device)
+    if [ -n "$WAN_DEV" ]; then
+        i=0
+        while uci -q get "network.@device[$i]" >/dev/null; do
+            if [ "$(uci -q get "network.@device[$i].type")" = "bridge" ]; then
+                case " $(uci -q get "network.@device[$i].ports") " in
+                    *" $WAN_DEV "*)
+                        uci del_list "network.@device[$i].ports=$WAN_DEV"
+                        echo "WARNING: $WAN_DEV (the WAN port) was in the LAN bridge - removed it." ;;
+                esac
+            fi
+            i=$((i + 1)); [ "$i" -gt 32 ] && break
+        done
+    fi
+fi
+
 # --- retire the original switch_watcher, if present ---
 # It must not be running while the build changes config, and it must not come
 # back at boot before commissioning replaces it. Its scripts and templates stay
