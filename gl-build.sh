@@ -43,7 +43,7 @@ if [ -f "$BASE/switch.conf" ]; then
 else
     case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
         glinet,mt3000*) GPIO_NUM=455; DOT_STATE=lo ;;
-        glinet,gl-sft1200*) GPIO_NUM=1; DOT_STATE=lo ;;
+        glinet,gl-sft1200*) GPIO_NUM=1; DOT_STATE=hi ;;   # opposite of the MT3000 - confirmed on the bench 2026-09-28
     esac
 fi
 if [ -n "${GPIO_NUM:-}" ]; then

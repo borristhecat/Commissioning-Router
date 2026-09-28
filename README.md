@@ -12,7 +12,7 @@ Supported units:
 | Unit | Firmware tested | Switch | Notes |
 | --- | --- | --- | --- |
 | GL-MT3000 (Beryl AX) | GL 4.9.0, 4.11.0 | gpio-455, dot = `lo` | MediaTek driver, HE20 |
-| GL-SFT1200 (Opal) | GL 4.8.3 (first bench test pending) | gpio-1, dot = `lo` | mac80211, HT20/VHT20, OpenWrt 18.06 |
+| GL-SFT1200 (Opal) | GL 4.8.3 (first bench test pending) | gpio-1, dot = `hi` (opposite of the MT3000) | mac80211, HT20/VHT20, OpenWrt 18.06 |
 
 The scripts detect the platform: wifi sections, channel width, transmit power
 and interface syntax are chosen per unit.

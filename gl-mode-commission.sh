@@ -17,8 +17,8 @@ if [ ! -f "$BASE/switch.conf" ]; then
     case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
         glinet,mt3000*) printf 'GPIO_NUM=455\nDOT_STATE=lo\n' > "$BASE/switch.conf"
                         echo "Applied known MT3000 mapping (gpio-455, dot=lo)." ;;
-        glinet,gl-sft1200*) printf 'GPIO_NUM=1\nDOT_STATE=lo\n' > "$BASE/switch.conf"
-                        echo "Applied known SFT1200 mapping (gpio-1, dot=lo)." ;;
+        glinet,gl-sft1200*) printf 'GPIO_NUM=1\nDOT_STATE=hi\n' > "$BASE/switch.conf"
+                        echo "Applied known SFT1200 mapping (gpio-1, dot=hi)." ;;
         *) echo "ERROR: no switch.conf and unknown board. Run gl-mode-calibrate.sh."; exit 1 ;;
     esac
 fi
