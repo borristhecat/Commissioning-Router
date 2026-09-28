@@ -31,6 +31,7 @@ done
 : "${UNIT_ROLE:?}"; : "${UNIT_IP:?}"; : "${AP_MGMT_IP:?}"
 : "${WIFI_KEY:?WIFI_KEY not set - it belongs in /etc/gl-mode/unit.conf}"
 SSID_SUFFIX="${SSID_SUFFIX:-}"
+RELAY_LAN_IP="${RELAY_LAN_IP:-192.168.254.1}"   # extender only: private address on its LAN bridge
 case "$UNIT_ROLE" in router|repeater) ;; *) echo "ERROR: bad UNIT_ROLE"; exit 1 ;; esac
 
 # --- refuse to run unless the switch is in DOT ---
@@ -77,12 +78,13 @@ if [ "$UNIT_ROLE" = "repeater" ] && uci -q show wireless | grep -q "=wifi-device
     exit 1
 fi
 
-# --- in router mode the WAN port must not be a LAN bridge member ---
+# --- in DOT the WAN port must never be a LAN bridge member (either role) ---
 # A port cannot be a routed WAN and a switch port at once. With eth0 left in
 # br-lan (e.g. from an AP template) the WAN never gets an address - not even a
 # static one - while the LAN side still serves DHCP. Seen on a field unit on
-# 2026-09-28; it needed a factory reset. Remove it here, whatever put it there.
-if [ "$UNIT_ROLE" = "router" ]; then
+# 2026-09-28; it needed a factory reset. On an Opal extender, GL's firmware put
+# it there itself when the WAN was disabled. Remove it, whatever put it there.
+if true; then
     WAN_DEV=$(uci -q get network.wan.device)
     if [ -n "$WAN_DEV" ]; then
         # 21.02+ style (MT3000): the bridge is a 'config device' with a ports list
@@ -161,16 +163,54 @@ if [ "$UNIT_ROLE" = "router" ]; then
     uci set network.wan.disabled='0'
     uci -q delete network.lan.gateway
     uci -q delete network.lan.dns
+    uci -q delete network.uplink
+    uci -q delete network.stabridge
 else
-    # Extender: reaches the internet (and GoodCloud) through the router's LAN.
-    # The WAN port is not used in DOT. Its section is kept, disabled, so
-    # commissioning can still find the port to bridge in NO-DOT.
-    uci set network.lan.gateway="$ROUTER_IP"
-    uci set network.lan.dns="$ROUTER_IP"
-    uci -q get network.wan >/dev/null && uci set network.wan.disabled='1'
+    # Extender, via relayd. The Opal's wifi driver cannot do 4-address (WDS)
+    # client mode, so its link to the router cannot sit in the LAN bridge
+    # (confirmed 2026-09-28: 'iw ... 4addr on' -> Not supported). Instead:
+    #   uplink     the wifi client link; holds UNIT_IP, gateway/DNS = router
+    #   lan        the local bridge (5 GHz _Ext1 + LAN port); a private address
+    #              used only between this unit and relayd
+    #   stabridge  relayd joins the two: clients' DHCP goes to the router, so
+    #              they get 172.24.172.x; broadcasts are forwarded too
+    uci set network.lan.ipaddr="$RELAY_LAN_IP"
+    uci -q delete network.lan.gateway
+    uci -q delete network.lan.dns
+    uci set network.uplink='interface'
+    uci set network.uplink.proto='static'
+    uci set network.uplink.ipaddr="$UNIT_IP"
+    uci set network.uplink.netmask="$NETMASK"
+    uci set network.uplink.gateway="$ROUTER_IP"
+    uci set network.uplink.dns="$ROUTER_IP"
+    uci set network.stabridge='interface'
+    uci set network.stabridge.proto='relay'
+    uci set network.stabridge.network='lan uplink'
+    uci set network.stabridge.ipaddr="$UNIT_IP"
+    # The WAN port is unused in DOT. Disabling it made GL's firmware treat it
+    # as a spare LAN port and bridge it in (seen 2026-09-28), so it is kept
+    # claimed with proto none instead. Commissioning still finds it by name.
+    if uci -q get network.wan >/dev/null; then
+        uci set network.wan.proto='none'
+        uci -q delete network.wan.disabled
+    fi
 fi
 uci -q set network.guest.disabled='1'
 uci commit network
+
+if [ "$UNIT_ROLE" = "repeater" ]; then
+    Z=$(uci show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='lan'$/\1/p" | head -n 1)
+    if [ -n "$Z" ]; then
+        CUR=$(uci -q get "firewall.$Z.network")
+        case " $CUR " in
+            *" uplink "*) ;;
+            *) uci set "firewall.$Z.network=$CUR uplink"; uci commit firewall
+               echo "  firewall: uplink added to the lan zone" ;;
+        esac
+    else
+        echo "WARNING: no firewall zone named 'lan' found - uplink not added."
+    fi
+fi
 
 # --- dhcp ---
 if [ "$UNIT_ROLE" = "router" ]; then
@@ -271,9 +311,8 @@ for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p")
 done
 
 # --- extender uplink ---
-# A client (sta) interface joins the router's SSID and sits in the LAN bridge.
-# wds=1 is 4-address mode: a true layer-2 bridge, so clients of the extender
-# get addresses from the router. UPLINK_BAND in unit.conf picks the radio;
+# A client (sta) interface joins the router's SSID on its own 'uplink' network;
+# relayd (above) joins it to the LAN. UPLINK_BAND in unit.conf picks the radio;
 # 2g is the default - longer range, and it avoids the router landing the
 # extender on a radar-checked 5 GHz channel its own AP cannot use.
 UPLINK_BAND="${UPLINK_BAND:-2g}"
@@ -285,13 +324,13 @@ if [ "$UNIT_ROLE" = "repeater" ]; then
     uci set wireless.uplink='wifi-iface'
     uci set wireless.uplink.device="$UP_DEV"
     uci set wireless.uplink.mode='sta'
-    uci set wireless.uplink.network='lan'
+    uci set wireless.uplink.network='uplink'
     uci set wireless.uplink.ssid="$UP_SSID"
     uci set wireless.uplink.key="$WIFI_KEY"
     uci set wireless.uplink.encryption="$ENCRYPTION"
-    uci set wireless.uplink.wds='1'
+    uci -q delete wireless.uplink.wds
     uci set wireless.uplink.disabled='0'
-    echo "  uplink: joins '$UP_SSID' on $UPLINK_BAND ($UP_DEV), bridged"
+    echo "  uplink: joins '$UP_SSID' on $UPLINK_BAND ($UP_DEV), relayed to the LAN"
 
     # Dedicated backhaul: by default the extender does NOT also run a client
     # access point on the uplink's radio. Sharing a radio halves its airtime
@@ -326,8 +365,31 @@ echo "Applying..."
 sleep 3
 wifi 2>/dev/null
 
+if [ "$UNIT_ROLE" = "repeater" ]; then
+    if [ -x /etc/init.d/relayd ]; then
+        /etc/init.d/relayd enable 2>/dev/null
+        t=0
+        while [ "$t" -lt 60 ]; do
+            ifstatus uplink 2>/dev/null | grep -q '"up": true' && break
+            sleep 3; t=$((t + 3))
+        done
+        /etc/init.d/relayd restart 2>/dev/null
+        if ifstatus uplink 2>/dev/null | grep -q '"up": true'; then
+            echo "  uplink up after ${t}s; relayd started"
+        else
+            echo "WARNING: uplink not up after 60s - is the router's SSID in range?"
+        fi
+    else
+        echo "ERROR: relayd is not installed - the extender cannot pass traffic."
+    fi
+fi
+
 echo
-echo "Built. LAN $UNIT_IP (alias $AP_MGMT_IP), SSIDs ${SSID_24}${SSID_SUFFIX} / ${SSID_5}${SSID_SUFFIX}"
+if [ "$UNIT_ROLE" = "repeater" ]; then
+    echo "Built. Extender at $UNIT_IP (over the uplink), SSIDs ${SSID_24}${SSID_SUFFIX} / ${SSID_5}${SSID_SUFFIX}"
+else
+    echo "Built. LAN $UNIT_IP (alias $AP_MGMT_IP), SSIDs ${SSID_24}${SSID_SUFFIX} / ${SSID_5}${SSID_SUFFIX}"
+fi
 echo "Still manual: GoodCloud registration, Toggle Button -> No Function, root password."
 echo "Then verify, then run gl-mode-commission.sh with the switch in DOT."
 
@@ -335,7 +397,8 @@ echo "Then verify, then run gl-mode-commission.sh with the switch in DOT."
 # Priority is the 'metric' on each kmwan member: lower wins. IPv6 twins
 # mirror their IPv4 parent - named wan6/tethering6 but modem_1_1_2_6, so
 # both spellings are tried. Members absent on this unit are skipped.
-if [ -f /etc/config/kmwan ] && [ -n "${WAN_ORDER:-}" ]; then
+# Router only: an extender's internet is the uplink, which kmwan does not manage.
+if [ "$UNIT_ROLE" = "router" ] && [ -f /etc/config/kmwan ] && [ -n "${WAN_ORDER:-}" ]; then
     m=1
     for w in $WAN_ORDER; do
         if uci -q get "kmwan.$w" >/dev/null; then

@@ -68,6 +68,8 @@ echo "Bridging $WAN_DEV into $LAN_DEV ($STYLE style)."
 
 U delete network.wan
 U delete network.wan6
+U delete network.uplink       # extender's relayd layout - not used in NO-DOT
+U delete network.stabridge
 U set network.lan.proto=dhcp
 for o in ipaddr netmask gateway dns ip6assign; do U delete "network.lan.$o"; done
 

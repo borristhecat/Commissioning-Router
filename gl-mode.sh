@@ -96,6 +96,21 @@ apply() {
     wifi 2>/dev/null
     check_bridge
 
+    # Extender in DOT: relayd joins the uplink to the LAN once the uplink is up.
+    # In NO-DOT there is no relay config, so a restart just stops it.
+    if [ -x /etc/init.d/relayd ]; then
+        if [ "$m" = "dot" ] && [ "$UNIT_ROLE" = "repeater" ]; then
+            t=0
+            while [ "$t" -lt 60 ]; do
+                ifstatus uplink 2>/dev/null | grep -q '"up": true' && break
+                sleep 3; t=$((t + 3))
+            done
+            ifstatus uplink 2>/dev/null | grep -q '"up": true' \
+                || logger -t gl-mode "WARNING: uplink not up after 60s"
+        fi
+        /etc/init.d/relayd restart 2>/dev/null
+    fi
+
     echo "$m" > "$STATE_FILE"
     logger -t gl-mode "now in $m mode"
 }
@@ -113,6 +128,8 @@ case "${1:-apply}" in
         # Extender: how well it hears the router. Judge placement by this,
         # not by the signal bars on a laptop.
         if [ "$UNIT_ROLE" = "repeater" ] && command -v iw >/dev/null; then
+            pidof relayd >/dev/null && echo "relayd       = running" || echo "relayd       = NOT running"
+            ifstatus uplink 2>/dev/null | grep -q '"up": true' && echo "uplink iface = up" || echo "uplink iface = down"
             for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
                 echo "--- uplink $i"
                 iw dev "$i" link | grep -E 'Connected|Not connected|SSID|signal|tx bitrate'

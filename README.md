@@ -34,7 +34,7 @@ existing `unit.conf` is kept.
 
 | | Router | Extender (`repeater`) |
 | --- | --- | --- |
-| Dot | router at .1, DHCP server, own SSIDs | joins the router's `Legrand-TechNet` wifi and bridges it; fixed at .5, gateway .1, DHCP off, broadcasts `_Ext1` SSIDs |
+| Dot | router at .1, DHCP server, own SSIDs | joins the router's `Legrand-TechNet` wifi and relays it (relayd); fixed at .5, gateway .1, DHCP off, broadcasts `_Ext1` SSIDs; WAN port unused |
 | No dot | AP / inline bridge, mgmt .254 | AP / inline bridge, mgmt .5, uplink off |
 | Channels (no dot) | 1 / 36 | 11 / 44 |
 
@@ -44,6 +44,14 @@ network, so clients and backhaul never share a radio. `UPLINK_RADIO_AP=on`
 brings the 2.4 GHz `_Ext1` back for 2.4-only devices. In no dot both bands
 broadcast. `gl-mode.sh status` on an extender shows the
 uplink's signal - use that, not a laptop's signal bars, to place it.
+
+The extender is Opal-only, and uses **relayd**, not a WDS bridge: the Opal's
+wifi driver cannot do 4-address client mode (`Not supported (-122)`). The
+uplink holds .5; the local bridge holds a private address (192.168.254.1, used
+only internally); relayd passes DHCP and broadcasts between them, so extender
+clients still get 172.24.172.x from the router. Multicast is not relayed. In
+dot the WAN port is set to `proto none` - disabling it instead makes GL's
+firmware bridge it into the LAN.
 
 Then put the switch in **dot** and wait a minute for the unit to settle.
 
