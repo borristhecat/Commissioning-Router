@@ -126,7 +126,7 @@ case "${1:-apply}" in
                 && echo "uplink addr  = set" || echo "uplink addr  = missing"
             for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
                 echo "--- uplink $i"
-                iw dev "$i" link | grep -E 'Connected|Not connected|SSID|signal|tx bitrate'
+                iw dev "$i" link 2>/dev/null | grep -E 'Connected|Not connected|SSID|signal|tx bitrate'
             done
         fi
         ;;
