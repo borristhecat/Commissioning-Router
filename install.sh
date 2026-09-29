@@ -47,7 +47,9 @@ fetch gl-build.sh           /root/gl-build.sh
 fetch gl-mode-commission.sh /root/gl-mode-commission.sh
 fetch gl-mode-calibrate.sh  /root/gl-mode-calibrate.sh
 fetch gl-safe.sh            /root/gl-safe.sh
-chmod +x /usr/bin/gl-mode.sh /etc/init.d/modewatch /root/gl-*.sh
+fetch gl-uplink.sh          /usr/bin/gl-uplink.sh
+fetch gl-uplink             /etc/init.d/gl-uplink
+chmod +x /usr/bin/gl-mode.sh /usr/bin/gl-uplink.sh /etc/init.d/modewatch /etc/init.d/gl-uplink /root/gl-*.sh
 
 U=/etc/gl-mode/unit.conf
 write_unit() {   # $1 = role
@@ -89,7 +91,7 @@ fi
 chmod 600 "$U"
 
 ok=1
-for f in /usr/bin/gl-mode.sh /root/gl-build.sh /root/gl-mode-commission.sh /root/gl-mode-calibrate.sh /root/gl-safe.sh; do
+for f in /usr/bin/gl-mode.sh /usr/bin/gl-uplink.sh /etc/init.d/gl-uplink /root/gl-build.sh /root/gl-mode-commission.sh /root/gl-mode-calibrate.sh /root/gl-safe.sh; do
     sh -n "$f" || { echo "SYNTAX ERROR in $f"; ok=0; }
 done
 [ "$ok" = 1 ] || exit 1

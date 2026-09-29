@@ -53,8 +53,13 @@ rollback() {
     stamp "Rolling back to the config saved before the build."
     /etc/init.d/modewatch stop 2>/dev/null
     tar -xzf "$SNAP" -C / || { stamp "ERROR: restore failed."; return 1; }
-    WATCH_WAS=no
+    WATCH_WAS=no; UPLINK_WAS=no
     [ -f "$INFO" ] && . "$INFO"
+    if [ "$UPLINK_WAS" = "no" ] && [ -x /etc/init.d/gl-uplink ]; then
+        /etc/init.d/gl-uplink stop 2>/dev/null
+        /etc/init.d/gl-uplink disable 2>/dev/null
+        stamp "Extender uplink service disabled (it was not enabled before)."
+    fi
     if [ "$WATCH_WAS" = "no" ]; then
         /etc/init.d/modewatch disable 2>/dev/null
         stamp "New watcher disabled (it was not enabled before)."
@@ -91,11 +96,13 @@ for f in etc/gl-mode usr/bin/switch_logic.sh usr/bin/switch_watcher.sh; do
 done
 WATCH_WAS=no
 [ -e /etc/rc.d/S99modewatch ] && WATCH_WAS=yes
+UPLINK_WAS=no
+[ -e /etc/rc.d/S98gl-uplink ] && UPLINK_WAS=yes
 if ! tar -czf "$SNAP" -C / $FILES; then
     stamp "ERROR: could not save a snapshot. Nothing changed."
     exit 1
 fi
-echo "WATCH_WAS=$WATCH_WAS" > "$INFO"
+printf "WATCH_WAS=%s\nUPLINK_WAS=%s\n" "$WATCH_WAS" "$UPLINK_WAS" > "$INFO"
 stamp "Snapshot saved: $SNAP ($FILES)"
 
 # 3. build, then commission straight after
@@ -135,7 +142,7 @@ stamp "STILL OFFLINE after ${WAIT}s (build=$B commission=$C)."
 stamp "Diagnostics before rollback:"
 ip -br addr 2>/dev/null
 ip route 2>/dev/null
-for i in uplink wan lan; do
+for i in wan lan; do
     ifstatus "$i" >/dev/null 2>&1 && echo "$i: $(ifstatus "$i" | grep -o '"up": [a-z]*')"
 done
 if command -v iw >/dev/null; then
@@ -144,5 +151,5 @@ if command -v iw >/dev/null; then
     done
 fi
 pidof relayd >/dev/null && echo "relayd running" || echo "relayd NOT running"
-logread 2>/dev/null | grep -iE 'wpa_supplicant|relayd|netifd' | tail -n 40
+logread 2>/dev/null | grep -iE 'wpa_supplicant|relayd|gl-uplink|netifd' | tail -n 40
 rollback

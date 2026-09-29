@@ -166,27 +166,22 @@ if [ "$UNIT_ROLE" = "router" ]; then
     uci -q delete network.uplink
     uci -q delete network.stabridge
 else
-    # Extender, via relayd. The Opal's wifi driver cannot do 4-address (WDS)
-    # client mode, so its link to the router cannot sit in the LAN bridge
-    # (confirmed 2026-09-28: 'iw ... 4addr on' -> Not supported). Instead:
-    #   uplink     the wifi client link; holds UNIT_IP, gateway/DNS = router
-    #   lan        the local bridge (5 GHz _Ext1 + LAN port); a private address
-    #              used only between this unit and relayd
-    #   stabridge  relayd joins the two: clients' DHCP goes to the router, so
-    #              they get 172.24.172.x; broadcasts are forwarded too
+    # Extender. The Opal's wifi driver cannot do 4-address (WDS) client mode
+    # (confirmed 2026-09-28), so the link to the router cannot sit in the LAN
+    # bridge; relayd joins the two instead. And its wifi script never hands a
+    # client interface to netifd (2026-09-29), so the uplink's address, route
+    # and relayd are run by our own service, gl-uplink, not by netifd:
+    #   lan      the local bridge (5 GHz _Ext1 + LAN port); a private address
+    #            used only between this unit and relayd
+    #   uplink   placeholder (proto none) the wifi client is attached to;
+    #            gl-uplink gives the client UNIT_IP and a route via the router
     uci set network.lan.ipaddr="$RELAY_LAN_IP"
     uci -q delete network.lan.gateway
     uci -q delete network.lan.dns
+    uci -q delete network.uplink
     uci set network.uplink='interface'
-    uci set network.uplink.proto='static'
-    uci set network.uplink.ipaddr="$UNIT_IP"
-    uci set network.uplink.netmask="$NETMASK"
-    uci set network.uplink.gateway="$ROUTER_IP"
-    uci set network.uplink.dns="$ROUTER_IP"
-    uci set network.stabridge='interface'
-    uci set network.stabridge.proto='relay'
-    uci set network.stabridge.network='lan uplink'
-    uci set network.stabridge.ipaddr="$UNIT_IP"
+    uci set network.uplink.proto='none'
+    uci -q delete network.stabridge
     # The WAN port is unused in DOT. Disabling it made GL's firmware treat it
     # as a spare LAN port and bridge it in (seen 2026-09-28), so it is kept
     # claimed with proto none instead. Commissioning still finds it by name.
@@ -198,18 +193,17 @@ fi
 uci -q set network.guest.disabled='1'
 uci commit network
 
+# --- firewall ---
+# An extender only relays inside our own private network, like the AP mode,
+# so it runs without a firewall (relayd needs plain forwarding between the
+# uplink and the LAN). A router keeps GL's firewall.
 if [ "$UNIT_ROLE" = "repeater" ]; then
-    Z=$(uci show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='lan'$/\1/p" | head -n 1)
-    if [ -n "$Z" ]; then
-        CUR=$(uci -q get "firewall.$Z.network")
-        case " $CUR " in
-            *" uplink "*) ;;
-            *) uci set "firewall.$Z.network=$CUR uplink"; uci commit firewall
-               echo "  firewall: uplink added to the lan zone" ;;
-        esac
-    else
-        echo "WARNING: no firewall zone named 'lan' found - uplink not added."
-    fi
+    /etc/init.d/firewall stop 2>/dev/null
+    /etc/init.d/firewall disable 2>/dev/null
+    echo "  firewall off (extender)"
+else
+    /etc/init.d/firewall enable 2>/dev/null
+    /etc/init.d/firewall start 2>/dev/null
 fi
 
 # --- dhcp ---
@@ -225,6 +219,12 @@ else
 fi
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
+# The extender's own DNS: netifd does not know the uplink, so nothing tells
+# dnsmasq about the router. Point it there directly (removed again on a router).
+case " $(uci -q get dhcp.@dnsmasq[0].server) " in
+    *" $ROUTER_IP "*) [ "$UNIT_ROLE" = "repeater" ] || uci del_list "dhcp.@dnsmasq[0].server=$ROUTER_IP" ;;
+    *)                [ "$UNIT_ROLE" = "repeater" ] && uci add_list "dhcp.@dnsmasq[0].server=$ROUTER_IP" ;;
+esac
 for s in guest iot; do
     uci -q get "dhcp.$s" >/dev/null && uci set "dhcp.$s.ignore=1"
 done
@@ -330,6 +330,7 @@ if [ "$UNIT_ROLE" = "repeater" ]; then
     uci set wireless.uplink.encryption="$ENCRYPTION"
     uci -q delete wireless.uplink.wds
     uci set wireless.uplink.disabled='0'
+    uci -q delete wireless.uplink.ifname
     echo "  uplink: joins '$UP_SSID' on $UPLINK_BAND ($UP_DEV), relayed to the LAN"
 
     # Dedicated backhaul: by default the extender does NOT also run a client
@@ -365,17 +366,27 @@ echo "Applying..."
 sleep 3
 wifi 2>/dev/null
 
+# GL's own relayd service reads proto 'relay' networks; none are used here.
+if [ -x /etc/init.d/relayd ]; then
+    /etc/init.d/relayd stop 2>/dev/null
+    /etc/init.d/relayd disable 2>/dev/null
+fi
+
 if [ "$UNIT_ROLE" = "repeater" ]; then
-    if [ -x /etc/init.d/relayd ]; then
-        /etc/init.d/relayd enable 2>/dev/null
+    if ! command -v relayd >/dev/null; then
+        echo "ERROR: relayd is not installed - the extender cannot pass traffic."
+    elif [ ! -x /etc/init.d/gl-uplink ]; then
+        echo "ERROR: /etc/init.d/gl-uplink missing - rerun install.sh."
+    else
+        /etc/init.d/gl-uplink enable
+        /etc/init.d/gl-uplink restart
         t=0
         while [ "$t" -lt 60 ]; do
-            ifstatus uplink 2>/dev/null | grep -q '"up": true' && break
+            ip -4 addr 2>/dev/null | grep -q "inet $UNIT_IP/" && pidof relayd >/dev/null && break
             sleep 3; t=$((t + 3))
         done
-        /etc/init.d/relayd restart 2>/dev/null
-        if ifstatus uplink 2>/dev/null | grep -q '"up": true'; then
-            echo "  uplink up after ${t}s; relayd started"
+        if ip -4 addr 2>/dev/null | grep -q "inet $UNIT_IP/" && pidof relayd >/dev/null; then
+            echo "  uplink up after ${t}s: $UNIT_IP via the router, relayd running"
         else
             echo "WARNING: uplink not up after 60s."
             if logread 2>/dev/null | tail -n 200 | grep -q 'reason=WRONG_KEY'; then
@@ -385,13 +396,14 @@ if [ "$UNIT_ROLE" = "repeater" ]; then
                 echo "         Is the router's Legrand-TechNet in range? (Units side by side can"
                 echo "         also fail - keep them a couple of metres apart.)"
             fi
-            iw dev 2>/dev/null | grep -q Interface && for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
+            for i in $(iw dev 2>/dev/null | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
                 echo "         $i: $(iw dev "$i" link 2>/dev/null | head -n 1)"
             done
         fi
-    else
-        echo "ERROR: relayd is not installed - the extender cannot pass traffic."
     fi
+elif [ -x /etc/init.d/gl-uplink ]; then
+    /etc/init.d/gl-uplink stop 2>/dev/null
+    /etc/init.d/gl-uplink disable 2>/dev/null
 fi
 
 echo

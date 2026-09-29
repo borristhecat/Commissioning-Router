@@ -53,6 +53,12 @@ clients still get 172.24.172.x from the router. Multicast is not relayed. In
 dot the WAN port is set to `proto none` - disabling it instead makes GL's
 firmware bridge it into the LAN.
 
+The Opal's wifi script never hands a client interface to netifd, so the
+uplink's address, default route and relayd are run by a small service of our
+own, `gl-uplink` (`/usr/bin/gl-uplink.sh`), which checks every 5 seconds and
+logs to `logread -e gl-uplink`. The extender runs without a firewall, like AP
+mode, and its DNS points at the router.
+
 Then put the switch in **dot** and wait a minute for the unit to settle.
 
 **Remote (GoodCloud Remote SSH) - always use this:**

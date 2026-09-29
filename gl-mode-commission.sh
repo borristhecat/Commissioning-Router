@@ -70,6 +70,7 @@ U delete network.wan
 U delete network.wan6
 U delete network.uplink       # extender's relayd layout - not used in NO-DOT
 U delete network.stabridge
+U del_list "dhcp.@dnsmasq[0].server=$ROUTER_IP"   # extender's DNS pointer, DOT only
 U set network.lan.proto=dhcp
 for o in ipaddr netmask gateway dns ip6assign; do U delete "network.lan.$o"; done
 
@@ -162,7 +163,8 @@ if [ -x /etc/init.d/gl_switch_button_check ]; then
 fi
 [ -x /etc/init.d/gpio_switch ] && echo "NOTE: gpio_switch left running (stock OpenWrt, also drives usb_power/fan)."
 
-for p in /etc/gl-mode/ /usr/bin/gl-mode.sh /etc/init.d/modewatch /etc/rc.d/S99modewatch; do
+for p in /etc/gl-mode/ /usr/bin/gl-mode.sh /etc/init.d/modewatch /etc/rc.d/S99modewatch \
+         /usr/bin/gl-uplink.sh /etc/init.d/gl-uplink /etc/rc.d/S98gl-uplink; do
     grep -qxF "$p" /etc/sysupgrade.conf 2>/dev/null || echo "$p" >> /etc/sysupgrade.conf
 done
 

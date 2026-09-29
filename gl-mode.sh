@@ -67,7 +67,9 @@ apply() {
 
     for f in $FILES; do cp "$BASE/$m/$f" "/etc/config/$f"; done
 
-    if [ "$m" = "dot" ]; then
+    # Firewall only on a router in DOT. AP mode and the extender (which only
+    # relays inside our own network) run without one.
+    if [ "$m" = "dot" ] && [ "$UNIT_ROLE" = "router" ]; then
         /etc/init.d/firewall enable 2>/dev/null
         /etc/init.d/firewall start  2>/dev/null
     else
@@ -96,20 +98,9 @@ apply() {
     wifi 2>/dev/null
     check_bridge
 
-    # Extender in DOT: relayd joins the uplink to the LAN once the uplink is up.
-    # In NO-DOT there is no relay config, so a restart just stops it.
-    if [ -x /etc/init.d/relayd ]; then
-        if [ "$m" = "dot" ] && [ "$UNIT_ROLE" = "repeater" ]; then
-            t=0
-            while [ "$t" -lt 60 ]; do
-                ifstatus uplink 2>/dev/null | grep -q '"up": true' && break
-                sleep 3; t=$((t + 3))
-            done
-            ifstatus uplink 2>/dev/null | grep -q '"up": true' \
-                || logger -t gl-mode "WARNING: uplink not up after 60s"
-        fi
-        /etc/init.d/relayd restart 2>/dev/null
-    fi
+    # Extender: gl-uplink (its own service) notices the new wifi interfaces
+    # within 5 s and re-applies the uplink address and relayd; in NO-DOT the
+    # uplink is disabled, so it stops relayd.
 
     echo "$m" > "$STATE_FILE"
     logger -t gl-mode "now in $m mode"
@@ -129,7 +120,10 @@ case "${1:-apply}" in
         # not by the signal bars on a laptop.
         if [ "$UNIT_ROLE" = "repeater" ] && command -v iw >/dev/null; then
             pidof relayd >/dev/null && echo "relayd       = running" || echo "relayd       = NOT running"
-            ifstatus uplink 2>/dev/null | grep -q '"up": true' && echo "uplink iface = up" || echo "uplink iface = down"
+            pidof gl-uplink.sh >/dev/null || ps | grep -q '[g]l-uplink.sh' \
+                && echo "gl-uplink    = running" || echo "gl-uplink    = NOT running"
+            ip -4 addr | grep -q "inet $(sed -n "s/^UNIT_IP=//p" "$BASE/unit.conf")/" \
+                && echo "uplink addr  = set" || echo "uplink addr  = missing"
             for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
                 echo "--- uplink $i"
                 iw dev "$i" link | grep -E 'Connected|Not connected|SSID|signal|tx bitrate'
