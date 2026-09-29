@@ -1,108 +1,97 @@
 # Commissioning-Router
 
-Makes the side switch on a GL.iNet GL-MT3000 select between two whole
-configurations:
+The side switch on a GL.iNet unit picks one of two complete setups:
 
-- **Dot** - the unit's own role (router: LAN 172.24.172.1/24, DHCP server)
-- **No dot** - AP / inline bridge: WAN bridged into LAN, no DHCP server,
-  firewall off, static management address plus a customer lease if offered
+- **Dot** - the unit's role: a router, or a wifi extender of the router
+- **No dot** - an access point bridged onto whatever the WAN port is plugged into
+  (no DHCP server, no firewall, fixed management address)
 
-Supported units:
+## Recommended units
 
-| Unit | Firmware tested | Switch | Notes |
-| --- | --- | --- | --- |
-| GL-MT3000 (Beryl AX) | GL 4.9.0, 4.11.0 | gpio-455, dot = `lo` | MediaTek driver, HE20 |
-| GL-SFT1200 (Opal) | GL 4.8.3 (first bench test pending) | gpio-1, dot = `hi` (opposite of the MT3000) | mac80211, HT20/VHT20, OpenWrt 18.06 |
-
-The scripts detect the platform: wifi sections, channel width, transmit power
-and interface syntax are chosen per unit.
-
-## Install on a router
-
-Over SSH (local, or GoodCloud Remote SSH). Single-quote the wifi key:
-
-```sh
-wget -qO /tmp/install.sh https://raw.githubusercontent.com/borristhecat/Commissioning-Router/main/install.sh
-sh /tmp/install.sh 'wifi-key-here'             # router (default)
-sh /tmp/install.sh 'wifi-key-here' repeater    # extender
-```
-
-Giving a role rewrites `/etc/gl-mode/unit.conf` for it. Without one, an
-existing `unit.conf` is kept.
-
-### Roles
-
-| | Router | Extender (`repeater`) |
+| Unit | Roles | Firmware tested |
 | --- | --- | --- |
-| Dot | router at .1, DHCP server, own SSIDs | joins the router's `Legrand-TechNet` wifi and relays it (relayd); fixed at .5, gateway .1, DHCP off, broadcasts `_Ext1` SSIDs; WAN port unused |
-| No dot | AP / inline bridge, mgmt .254 | AP / inline bridge, mgmt .5, uplink off |
-| Channels (no dot) | 1 / 36 | 11 / 44 |
+| GL-MT3000 (Beryl AX) | router | GL 4.9.0, 4.11.0 |
+| GL-SFT1200 (Opal) | router or extender | GL 4.8.3 |
 
-The extender's uplink uses 2.4 GHz as a dedicated backhaul by default
-(`UPLINK_BAND=2g` in `unit.conf`): in dot it broadcasts only the 5 GHz `_Ext1`
-network, so clients and backhaul never share a radio. `UPLINK_RADIO_AP=on`
-brings the 2.4 GHz `_Ext1` back for 2.4-only devices. In no dot both bands
-broadcast. `gl-mode.sh status` on an extender shows the
-uplink's signal - use that, not a laptop's signal bars, to place it.
+Other models are not supported. The scripts detect which of these two they are
+running on.
 
-The extender is Opal-only, and uses **relayd**, not a WDS bridge: the Opal's
-wifi driver cannot do 4-address client mode (`Not supported (-122)`). The
-uplink holds .5; the local bridge holds a private address (192.168.254.1, used
-only internally); relayd passes DHCP and broadcasts between them, so extender
-clients still get 172.24.172.x from the router. Multicast is not relayed. In
-dot the WAN port is set to `proto none` - disabling it instead makes GL's
-firmware bridge it into the LAN.
+## Addresses and wifi
 
-The Opal's wifi script never hands a client interface to netifd, so the
-uplink's address, default route and relayd are run by a small service of our
-own, `gl-uplink` (`/usr/bin/gl-uplink.sh`), which checks every 5 seconds and
-logs to `logread -e gl-uplink`. The extender runs without a firewall, like AP
-mode, and its DNS points at the router.
+| | Router | Extender |
+| --- | --- | --- |
+| Dot: address | 172.24.172.1, DHCP .230-.249 | 172.24.172.5 (over its wifi link to the router) |
+| Dot: wifi | `Legrand-TechNet` / `Legrand-TechNet_5G` | `Legrand-TechNet_5G_Ext1` (2.4 GHz is its link to the router) |
+| No dot: address | 172.24.172.254 + a DHCP lease | 172.24.172.5 + a DHCP lease |
+| No dot: wifi | same names, channels 1 / 36 | `_Ext1` names, channels 11 / 44 |
 
-Then put the switch in **dot** and wait a minute for the unit to settle.
+All wifi is 20 MHz, maximum power, region DE. The wifi key is not stored in
+this repo; it is given to `install.sh` on the command line.
 
-**Remote (GoodCloud Remote SSH) - always use this:**
+## Onboard a unit (new or existing)
 
-```sh
-sh /root/gl-safe.sh
-```
+1. New unit only: in the web page at 192.168.8.1 set the admin password (it is
+   also the SSH root password) and, for remote access, bind it to GoodCloud and
+   turn on Remote SSH.
+2. The unit has internet on its WAN port (a cable, or for an extender any cable
+   with internet) and the switch is in **dot**.
+3. SSH in: locally `ssh root@192.168.8.1` (new unit) or its kit address, or
+   GoodCloud > Remote SSH. An Opal needs
+   `ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa root@<address>`
+   from Windows.
+4. Run one line, with `router` or `repeater` (extender, Opal only):
 
-Saves the current config, builds, commissions, then checks the unit can
-still reach the internet. If it cannot within 5 minutes, it restores the saved
-config and reboots, so the unit comes back as it was. Your session will drop
-when networking restarts; reconnect after a few minutes and read
-`/root/gl-safe.log`. `sh /root/gl-safe.sh rollback` restores the saved config
-by hand later.
+   ```sh
+   wget -qO /tmp/install.sh https://raw.githubusercontent.com/borristhecat/Commissioning-Router/main/install.sh && sh /tmp/install.sh 'wifi-key' router && sh /root/gl-safe.sh
+   ```
 
-**Local, on the LAN cable:**
+5. The session drops when networking restarts. Reconnect after 2 minutes at the
+   unit's dot address and check:
 
-```sh
-sh /root/gl-build.sh
-sh /root/gl-mode-commission.sh
-```
+   ```sh
+   tail -n 5 /root/gl-safe.log; sh /usr/bin/gl-mode.sh status
+   ```
 
-The build refuses to run unless the switch is in dot and the live config is
-router mode, and it stops any original `switch_watcher` itself. It runs
-detached and logs to `/root/gl-build.log`, so a dropped session cannot stop it
-part-way. The log's last line is `EXIT=<code>`.
+   `ONLINE ... keeping the new config` = done. If the unit had no internet 5
+   minutes after the build, it put its old setup back and rebooted; the log
+   says why.
 
-## Retrofitting a unit running the original switch_logic.sh
+An extender needs its router already running and in range (keep them a
+couple of metres apart - side by side can fail).
 
-Switch to **dot first**, wait for router mode, then install and run as above.
-No need to stop the old watcher by hand - the build does it. Once the flip test
-passes:
+## Update the scripts only
+
+Keeps the unit's role and setup:
 
 ```sh
-rm -f /etc/config/network.ap /etc/config/network.router
+wget -qO /tmp/install.sh https://raw.githubusercontent.com/borristhecat/Commissioning-Router/main/install.sh && sh /tmp/install.sh 'wifi-key' && /etc/init.d/gl-uplink restart
 ```
 
-## Check
+## Undo
 
-```sh
-/usr/bin/gl-mode.sh status
-logread -e gl-mode
-```
+`sh /root/gl-safe.sh rollback` restores the setup saved before the last
+`gl-safe.sh` run and reboots.
 
-## Not in this repo
+## Files
 
-The wifi key. It lives only in `/etc/gl-mode/unit.conf` on each device.
+| File | On the unit | Does |
+| --- | --- | --- |
+| `install.sh` | `/tmp` | fetches the rest, writes `/etc/gl-mode/unit.conf` for the role |
+| `site.conf` | `/etc/gl-mode/` | shared addresses, names, radio settings |
+| `gl-safe.sh` | `/root` | build + commission, rolls back if the unit loses internet |
+| `gl-build.sh` | `/root` | writes the dot setup for the role |
+| `gl-mode-commission.sh` | `/root` | saves the dot setup, derives the no-dot one, starts the switch watcher |
+| `gl-mode.sh` + `modewatch` | `/usr/bin`, `/etc/init.d` | watches the switch and swaps setups |
+| `gl-uplink.sh` + `gl-uplink` | `/usr/bin`, `/etc/init.d` | extender only: uplink address, route and relayd |
+| `gl-mode-calibrate.sh` | `/root` | finds the switch GPIO on an unknown unit |
+
+## How the extender works
+
+The Opal cannot bridge a wifi client (no 4-address mode), so the extender
+relays instead: its 2.4 GHz radio joins the router, `gl-uplink` gives that link
+172.24.172.5 and a route via .1, and relayd passes DHCP and broadcasts between
+it and the local bridge. Clients get addresses from the router. The Opal's own
+wifi script never hands the client link to netifd, which is why `gl-uplink`
+does this itself; it rechecks every 5 seconds and logs to
+`logread -e gl-uplink`. GL's firmware restarts its firewall on its own, so
+`gl-uplink` also keeps two FORWARD accept rules for the link in place.
