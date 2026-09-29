@@ -130,4 +130,19 @@ if online; then
 fi
 
 stamp "STILL OFFLINE after ${WAIT}s (build=$B commission=$C)."
+# The system log is in RAM and the rollback reboots, so keep what explains
+# the failure here first.
+stamp "Diagnostics before rollback:"
+ip -br addr 2>/dev/null
+ip route 2>/dev/null
+for i in uplink wan lan; do
+    ifstatus "$i" >/dev/null 2>&1 && echo "$i: $(ifstatus "$i" | grep -o '"up": [a-z]*')"
+done
+if command -v iw >/dev/null; then
+    for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
+        echo "--- $i"; iw dev "$i" link 2>/dev/null
+    done
+fi
+pidof relayd >/dev/null && echo "relayd running" || echo "relayd NOT running"
+logread 2>/dev/null | grep -iE 'wpa_supplicant|relayd|netifd' | tail -n 40
 rollback

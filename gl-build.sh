@@ -377,7 +377,17 @@ if [ "$UNIT_ROLE" = "repeater" ]; then
         if ifstatus uplink 2>/dev/null | grep -q '"up": true'; then
             echo "  uplink up after ${t}s; relayd started"
         else
-            echo "WARNING: uplink not up after 60s - is the router's SSID in range?"
+            echo "WARNING: uplink not up after 60s."
+            if logread 2>/dev/null | tail -n 200 | grep -q 'reason=WRONG_KEY'; then
+                echo "         The router rejected the wifi key (WRONG_KEY). Check WIFI_KEY in"
+                echo "         /etc/gl-mode/unit.conf matches the router's Legrand-TechNet key."
+            else
+                echo "         Is the router's Legrand-TechNet in range? (Units side by side can"
+                echo "         also fail - keep them a couple of metres apart.)"
+            fi
+            iw dev 2>/dev/null | grep -q Interface && for i in $(iw dev | awk '/Interface/ {n=$2} /type managed/ {print n}'); do
+                echo "         $i: $(iw dev "$i" link 2>/dev/null | head -n 1)"
+            done
         fi
     else
         echo "ERROR: relayd is not installed - the extender cannot pass traffic."
