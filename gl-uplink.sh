@@ -53,8 +53,8 @@ while true; do
         # back (FORWARD policy DROP, uplink in no zone), so the two accept rules
         # are re-checked here every pass rather than relying on it staying off.
         for dir in -i -o; do
-            iptables -C FORWARD $dir "$D" -j ACCEPT 2>/dev/null \
-                || { iptables -I FORWARD 1 $dir "$D" -j ACCEPT && log "forward rule $dir $D added"; }
+            iptables -w -C FORWARD $dir "$D" -j ACCEPT 2>/dev/null \
+                || { iptables -w -I FORWARD 1 $dir "$D" -j ACCEPT && log "forward rule $dir $D added"; }
         done
         # restart relayd if it died or either interface was recreated
         KEY="$D:$(cat /sys/class/net/$D/ifindex 2>/dev/null):$(cat /sys/class/net/br-lan/ifindex 2>/dev/null)"
